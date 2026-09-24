@@ -1,1 +1,682 @@
+using Toybox.Application;
+using Toybox.ActivityMonitor;
+using Toybox.System;
+using Toybox.Time;
+using Toybox.Attention;
+using Toybox.Graphics;
+using Toybox.Lang;
+using Toybox.Timer;
+using Toybox.WatchUi;
+
+class RefWatchTestApp extends Application.AppBase {
+
+    function initialize() {
+        AppBase.initialize();
+    }
+
+    function getInitialView() {
+        var view = new RefWatchView();
+        return [ view, new RefWatchDelegate(view) ];
+    }
+}
+
+class RefWatchView extends WatchUi.View {
+
+    var selected as Lang.Number = 90;
+    var selectionDone as Lang.Boolean = false;
+
+    var remainingSeconds as Lang.Number = 0;
+    var running as Lang.Boolean = false;
+    var finished as Lang.Boolean = false;
+    var matchStarted as Lang.Boolean = false;
+    var halfTimeShown as Lang.Boolean = false;
+    var secondHalf as Lang.Boolean = false;
+
+    var pauseRunning as Lang.Boolean = false;
+    var pauseFinished as Lang.Boolean = false;
+    var pauseAlertShown as Lang.Boolean = false;
+    var matchStartSteps as Lang.Number = 0;
+    var matchStartDistanceCm as Lang.Number = 0;
+    var matchSteps as Lang.Number = 0;
+    var matchDistanceCm as Lang.Number = 0;
+    var batteryPercent as Lang.Float = 0.0;
+    var pauseRemainingSeconds as Lang.Number = 15 * 60;
+
+    var stoppageRunning as Lang.Boolean = false;
+    var stoppageSeconds as Lang.Number = 0;
+    var firstHalfStoppage as Lang.Boolean = false;
+    var firstHalfStoppageSeconds as Lang.Number = 0;
+    var secondHalfStoppageSeconds as Lang.Number = 0;
+    var twoMinuteWarningShown as Lang.Boolean = false;
+
+    // Ereignisse / Spielzeiten
+    var eventPageShown as Lang.Boolean = false;
+    var startHour as Lang.Number = 0;
+    var startMinute as Lang.Number = 0;
+    var endHour as Lang.Number = 0;
+    var endMinute as Lang.Number = 0;
+
+    var timer as Timer.Timer;
+
+    function initialize() {
+        View.initialize();
+
+        timer = new Timer.Timer();
+        timer.start(method(:timerTick), 1000, true);
+    }
+
+    function choose(minutes as Lang.Number) as Void {
+        selected = minutes;
+        WatchUi.requestUpdate();
+    }
+
+    function confirmSelection() as Void {
+        selectionDone = true;
+        remainingSeconds = (selected / 2) * 60;
+        running = false;
+        finished = false;
+        matchStarted = false;
+        halfTimeShown = false;
+        secondHalf = false;
+        pauseRunning = false;
+        pauseFinished = false;
+        pauseAlertShown = false;
+        pauseRemainingSeconds = 15 * 60;
+        stoppageRunning = false;
+        stoppageSeconds = 0;
+        firstHalfStoppageSeconds = 0;
+        secondHalfStoppageSeconds = 0;
+        firstHalfStoppage = false;
+        twoMinuteWarningShown = false;
+        eventPageShown = false;
+        startHour = 0;
+        startMinute = 0;
+        endHour = 0;
+        endMinute = 0;
+        WatchUi.requestUpdate();
+    }
+
+    function backToSelection() as Void {
+        selectionDone = false;
+        running = false;
+        matchStarted = false;
+        halfTimeShown = false;
+        secondHalf = false;
+        finished = false;
+        pauseRunning = false;
+        pauseFinished = false;
+        pauseAlertShown = false;
+        pauseRemainingSeconds = 15 * 60;
+        stoppageRunning = false;
+        stoppageSeconds = 0;
+        firstHalfStoppageSeconds = 0;
+        secondHalfStoppageSeconds = 0;
+        firstHalfStoppage = false;
+        twoMinuteWarningShown = false;
+        eventPageShown = false;
+        WatchUi.requestUpdate();
+    }
+
+    function nextSelection() as Void {
+        if (selected == 90) {
+            selected = 80;
+        } else if (selected == 80) {
+            selected = 70;
+        } else if (selected == 70) {
+            selected = 60;
+        } else {
+            selected = 90;
+        }
+        WatchUi.requestUpdate();
+    }
+
+    function previousSelection() as Void {
+        if (selected == 90) {
+            selected = 60;
+        } else if (selected == 60) {
+            selected = 70;
+        } else if (selected == 70) {
+            selected = 80;
+        } else {
+            selected = 90;
+        }
+        WatchUi.requestUpdate();
+    }
+
+    function toggleRun() as Void {
+        if (!selectionDone || finished || halfTimeShown) {
+            return;
+        }
+
+        running = !running;
+        WatchUi.requestUpdate();
+    }
+
+    function timerTick() as Void {
+        if (!selectionDone || finished) {
+            return;
+        }
+
+        // Auch im "SPIEL BEREIT"-Fenster regelmäßig neu zeichnen,
+        // damit die aktuelle Uhrzeit dort laufend aktualisiert wird.
+        if (!matchStarted) {
+            WatchUi.requestUpdate();
+            return;
+        }
+
+        updateActivityStats();
+
+        // 15-minute halftime break countdown.
+        if (halfTimeShown && pauseRunning && !pauseFinished) {
+            if (pauseRemainingSeconds > 0) {
+                pauseRemainingSeconds -= 1;
+            }
+
+            if (pauseRemainingSeconds <= 0) {
+                pauseRemainingSeconds = 0;
+                pauseRunning = false;
+                pauseFinished = true;
+                pauseAlertShown = true;
+                triggerPauseAlert();
+            }
+
+            WatchUi.requestUpdate();
+            return;
+        }
+
+        // Stoppage time counts UP after the normal half has reached 00:00.
+        if (stoppageRunning) {
+            stoppageSeconds += 1;
+            if (firstHalfStoppage) {
+                firstHalfStoppageSeconds = stoppageSeconds;
+            } else {
+                secondHalfStoppageSeconds = stoppageSeconds;
+            }
+            WatchUi.requestUpdate();
+            return;
+        }
+
+        if (!running || halfTimeShown) {
+            return;
+        }
+
+        if (remainingSeconds > 0) {
+            remainingSeconds -= 1;
+        }
+
+        if (remainingSeconds == 120 && !twoMinuteWarningShown) {
+            twoMinuteWarningShown = true;
+            triggerTwoMinuteWarning();
+        }
+
+        if (!secondHalf && remainingSeconds <= 0) {
+            remainingSeconds = 0;
+            running = false;
+            firstHalfStoppage = true;
+            stoppageSeconds = 0;
+            firstHalfStoppageSeconds = 0;
+            stoppageRunning = true;
+        }
+
+        if (secondHalf && remainingSeconds <= 0) {
+            remainingSeconds = 0;
+            running = false;
+            firstHalfStoppage = false;
+            stoppageSeconds = 0;
+            secondHalfStoppageSeconds = 0;
+            stoppageRunning = true;
+        }
+
+        WatchUi.requestUpdate();
+    }
+
+    function triggerPauseAlert() as Void {
+        if (Attention has :vibrate) {
+            var vibeData = [
+                new Attention.VibeProfile(100, 400),
+                new Attention.VibeProfile(0, 250),
+                new Attention.VibeProfile(100, 400),
+                new Attention.VibeProfile(0, 250),
+                new Attention.VibeProfile(100, 700)
+            ];
+            Attention.vibrate(vibeData);
+        }
+    }
+
+    function triggerTwoMinuteWarning() as Void {
+        var vibeData = [
+            new Attention.VibeProfile(100, 2000)
+        ];
+        Attention.vibrate(vibeData);
+    }
+
+    function startPauseTimer() as Void {
+        if (!halfTimeShown || pauseRunning || pauseFinished) {
+            return;
+        }
+
+        pauseRemainingSeconds = 15 * 60;
+        pauseRunning = true;
+        WatchUi.requestUpdate();
+    }
+
+    function startSecondHalf() as Void {
+        if (!halfTimeShown) {
+            return;
+        }
+
+        // Die Pause kann jederzeit vor Ablauf der 15 Minuten beendet werden.
+        pauseRunning = false;
+        pauseFinished = false;
+        pauseAlertShown = false;
+        pauseRemainingSeconds = 0;
+
+        halfTimeShown = false;
+        secondHalf = true;
+        twoMinuteWarningShown = false;
+        remainingSeconds = (selected / 2) * 60;
+        running = true;
+        WatchUi.requestUpdate();
+    }
+
+    function finishStoppageAndStartPause() as Void {
+        if (!stoppageRunning || !firstHalfStoppage) {
+            return;
+        }
+
+        stoppageRunning = false;
+        halfTimeShown = true;
+        pauseRunning = true;
+        pauseFinished = false;
+        pauseAlertShown = false;
+        pauseRemainingSeconds = 15 * 60;
+        WatchUi.requestUpdate();
+    }
+
+    function finishSecondHalf() as Void {
+        if (!stoppageRunning || firstHalfStoppage) {
+            return;
+        }
+
+        stoppageRunning = false;
+        running = false;
+        finished = true;
+
+        // Endzeit direkt beim Ende der 2. Halbzeit erfassen.
+        var now = System.getClockTime();
+        endHour = now.hour;
+        endMinute = now.min;
+        eventPageShown = true;
+        WatchUi.requestUpdate();
+    }
+
+    function captureActivityBaseline() as Void {
+        var info = ActivityMonitor.getInfo();
+
+        var steps = info.steps;
+        if (steps != null) {
+            matchStartSteps = steps as Lang.Number;
+        }
+
+        var distance = info.distance;
+        if (distance != null) {
+            matchStartDistanceCm = distance as Lang.Number;
+        }
+
+        matchSteps = 0;
+        matchDistanceCm = 0;
+        updateBattery();
+    }
+
+    function updateActivityStats() as Void {
+        var info = ActivityMonitor.getInfo();
+
+        var steps = info.steps;
+        if (steps != null) {
+            var currentSteps = steps as Lang.Number;
+            if (currentSteps >= matchStartSteps) {
+                matchSteps = currentSteps - matchStartSteps;
+            }
+        }
+
+        var distance = info.distance;
+        if (distance != null) {
+            var currentDistance = distance as Lang.Number;
+            if (currentDistance >= matchStartDistanceCm) {
+                matchDistanceCm = currentDistance - matchStartDistanceCm;
+            }
+        }
+
+        updateBattery();
+    }
+
+    function updateBattery() as Void {
+        var stats = System.getSystemStats();
+        var battery = stats.battery;
+        if (battery != null) {
+            batteryPercent = battery as Lang.Float;
+        }
+    }
+
+    function getDistanceKm() as Lang.Float {
+        return matchDistanceCm / 100000.0;
+    }
+
+    function drawCurrentTime(dc as Graphics.Dc, centerX as Lang.Number, y as Lang.Number) as Void {
+        var now = System.getClockTime();
+        var timeText = now.hour.format("%02d") + ":" + now.min.format("%02d");
+
+        dc.setColor(Graphics.COLOR_YELLOW, Graphics.COLOR_BLACK);
+        dc.drawText(centerX, y, Graphics.FONT_MEDIUM,timeText, Graphics.TEXT_JUSTIFY_CENTER);
+        dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_BLACK);
+    }
+
+    function startMatch() as Void {
+        if (!selectionDone || matchStarted || finished) {
+            return;
+        }
+
+        matchStarted = true;
+        running = true;
+
+        // Spielbeginn mit der Garmin-Systemzeit erfassen.
+        var now = System.getClockTime();
+        startHour = now.hour;
+        startMinute = now.min;
+
+        captureActivityBaseline();
+        updateActivityStats();
+        WatchUi.requestUpdate();
+    }
+
+    function handleGameTap() as Void {
+        // First tap after selecting the match duration starts the match.
+        if (!matchStarted) {
+            startMatch();
+            return;
+        }
+
+        // During stoppage time the tap ends that phase.
+        if (stoppageRunning) {
+            if (firstHalfStoppage) {
+                finishStoppageAndStartPause();
+            } else {
+                finishSecondHalf();
+            }
+            return;
+        }
+
+        // Half-time: the 15-minute break starts automatically.
+        // A tap is only used after the break has finished to start the second half.
+        if (halfTimeShown) {
+            // Pause kann auch vor den 15 Minuten manuell beendet werden.
+            if (pauseRunning) {
+                startSecondHalf();
+                return;
+            }
+
+            if (pauseFinished) {
+                startSecondHalf();
+            }
+            return;
+        }
+
+        // During an active half there is deliberately no pause function.
+    }
+
+    function getHalfTime() as Lang.Number {
+        return selected / 2;
+    }
+
+    function getPlayedMinute() as Lang.Number {
+        var half = (selected / 2) * 60;
+
+        if (!secondHalf) {
+            // First half: 45:00 -> 0'
+            var firstHalfPlayed = half - remainingSeconds;
+            return (firstHalfPlayed / 60);
+        }
+
+        // Second half: 45:00 -> 90'
+        var secondHalfPlayed = half - remainingSeconds;
+        return (selected / 2) + (secondHalfPlayed / 60);
+    }
+
+    function onUpdate(dc as Graphics.Dc) as Void {
+        var width = dc.getWidth();
+        var centerX = width / 2;
+
+        dc.setColor(Graphics.COLOR_BLACK, Graphics.COLOR_BLACK);
+        dc.clear();
+        dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_BLACK);
+
+        if (!selectionDone) {
+            drawSelection(dc, centerX);
+        } else if (eventPageShown) {
+            drawEventPage(dc, centerX);
+        } else {
+            drawMatch(dc, centerX);
+        }
+    }
+
+    function drawSelection(dc as Graphics.Dc, centerX as Lang.Number) as Void {
+        dc.drawText(centerX, 0,  Graphics.FONT_XTINY,"V30", Graphics.TEXT_JUSTIFY_CENTER);    
+        dc.drawText(centerX, 17, Graphics.FONT_XTINY,"REFWATCH", Graphics.TEXT_JUSTIFY_CENTER);
+        dc.drawText(centerX, 35, Graphics.FONT_SMALL,"Spielzeit", Graphics.TEXT_JUSTIFY_CENTER);
+
+        // Spielzeiten wie bisher auswählen: Drehen/Wischen oder direkt antippen.
+        drawOption(dc, centerX, 67,  "90 MIN", selected == 90);
+        drawOption(dc, centerX, 95,  "80 MIN", selected == 80);
+        drawOption(dc, centerX, 123, "70 MIN", selected == 70);
+        drawOption(dc, centerX, 151, "60 MIN", selected == 60);
+
+       dc.drawText(0, 110, Graphics.FONT_XTINY, "DREHEN", Graphics.TEXT_JUSTIFY_LEFT);   
+       //dc.drawText(0, 130, Graphics.FONT_XTINY, "AUSWAHL", Graphics.TEXT_JUSTIFY_LEFT); 
+       //dc.drawText(centerX, 190, Graphics.FONT_XTINY, "DREHEN = AUSWAHL", Graphics.TEXT_JUSTIFY_CENTER);    
+       // dc.drawText(centerX, 218, Graphics.FONT_XTINY, "Select", Graphics.TEXT_JUSTIFY_CENTER);
+
+        // Klare finale Bestätigung über einen eigenen Button.
+        dc.fillRectangle(centerX - 82, 188, 164, 30);
+        dc.setColor(Graphics.COLOR_BLACK, Graphics.COLOR_WHITE);
+        dc.drawText(centerX, 195, Graphics.FONT_XTINY,"SpZ OK", Graphics.TEXT_JUSTIFY_CENTER);
+        dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_BLACK);
+    }
+
+    function drawMatch(dc as Graphics.Dc, centerX as Lang.Number) as Void {
+        //dc.drawText(centerX, 10, Graphics.FONT_SMALL,"REFWATCH V30", Graphics.TEXT_JUSTIFY_CENTER);
+
+        if (!matchStarted) {
+            dc.drawText(centerX, 40, Graphics.FONT_MEDIUM,"SPIEL BEREIT", Graphics.TEXT_JUSTIFY_CENTER);
+            dc.drawText(centerX, 74, Graphics.FONT_XTINY,"Spielzeit", Graphics.TEXT_JUSTIFY_CENTER);
+            dc.drawText(centerX, 91, Graphics.FONT_NUMBER_MEDIUM,((selected / 2).format("%02d") + ":00"),Graphics.TEXT_JUSTIFY_CENTER);
+            // Uhrzeit ausgeben
+            drawCurrentTime(dc, centerX, 8);
+            //dc.drawText(centerX, 158, Graphics.FONT_MEDIUM,"LOS GEHT'S", Graphics.TEXT_JUSTIFY_CENTER);
+            dc.drawText(centerX, 184, Graphics.FONT_XTINY,"TIP = START", Graphics.TEXT_JUSTIFY_CENTER);
+
+            return;
+        }
+
+        if (stoppageRunning) {
+            var sm = stoppageSeconds / 60;
+            var ss = stoppageSeconds % 60;
+            var stoppageText = "+" + sm.format("%02d") + ":" + ss.format("%02d");
+
+            dc.drawText(centerX, 34, Graphics.FONT_MEDIUM,firstHalfStoppage ? "ENDE 1. HZ" : "ENDE 2. HZ",Graphics.TEXT_JUSTIFY_CENTER);
+            dc.setColor(Graphics.COLOR_YELLOW, Graphics.COLOR_BLACK);
+            dc.drawText(centerX, 72, Graphics.FONT_NUMBER_MEDIUM,stoppageText, Graphics.TEXT_JUSTIFY_CENTER);
+            dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_BLACK);
+            dc.drawText(centerX, 123, Graphics.FONT_SMALL,"NACHSPIELZEIT", Graphics.TEXT_JUSTIFY_CENTER);
+            dc.drawText(centerX, 157, Graphics.FONT_XTINY,"TIP = WEITER", Graphics.TEXT_JUSTIFY_CENTER);
+
+            return;
+        }
+
+        if (halfTimeShown) {
+            dc.drawText(centerX, 34, Graphics.FONT_MEDIUM, "PAUSE", Graphics.TEXT_JUSTIFY_CENTER);
+            
+            // Uhrzeit ausgeben
+                drawCurrentTime(dc, centerX, 8);
+            
+            if (pauseFinished) {
+                dc.drawText(centerX, 64, Graphics.FONT_MEDIUM,"PAUSE ENDE", Graphics.TEXT_JUSTIFY_CENTER);
+                dc.drawText(centerX, 103, Graphics.FONT_NUMBER_MEDIUM,"15:00", Graphics.TEXT_JUSTIFY_CENTER);
+                dc.drawText(centerX, 145, Graphics.FONT_SMALL,"WEITER?", Graphics.TEXT_JUSTIFY_CENTER);
+                dc.drawText(centerX, 177, Graphics.FONT_XTINY,"TIP = 2. HALBZEIT", Graphics.TEXT_JUSTIFY_CENTER);
+            } else if (pauseRunning) {
+                var pm = pauseRemainingSeconds / 60;
+                var ps = pauseRemainingSeconds % 60;
+                var pauseText = pm.format("%02d") + ":" + ps.format("%02d");
+
+                dc.drawText(centerX, 70, Graphics.FONT_NUMBER_MEDIUM,pauseText, Graphics.TEXT_JUSTIFY_CENTER);
+                dc.drawText(centerX, 119, Graphics.FONT_SMALL,"PAUSEN-TIMER", Graphics.TEXT_JUSTIFY_CENTER);
+                dc.drawText(centerX, 151, Graphics.FONT_XTINY,"TIP = 2. HALBZEIT", Graphics.TEXT_JUSTIFY_CENTER);
+            } else {
+                dc.drawText(centerX, 70, Graphics.FONT_NUMBER_MEDIUM,"15:00", Graphics.TEXT_JUSTIFY_CENTER);
+                dc.drawText(centerX, 119, Graphics.FONT_SMALL,"PAUSEN-TIMER", Graphics.TEXT_JUSTIFY_CENTER);
+            }
+
+            return;
+        }
+
+        var minutes = remainingSeconds / 60;
+        var seconds = remainingSeconds % 60;
+        var timeText = minutes.format("%02d") + ":" + seconds.format("%02d");
+
+        if (remainingSeconds <= 120 && remainingSeconds > 0) {
+            dc.setColor(Graphics.COLOR_RED, Graphics.COLOR_BLACK);
+        }
+        dc.drawText(centerX, 45, Graphics.FONT_NUMBER_MEDIUM,timeText, Graphics.TEXT_JUSTIFY_CENTER);
+        dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_BLACK);
+        dc.drawText(48, 15, Graphics.FONT_XTINY,"Bat " + batteryPercent.format("%.0f") + "%", Graphics.TEXT_JUSTIFY_LEFT);
+
+        var clockNow = System.getClockTime();
+        var currentTimeText = clockNow.hour.format("%02d") + ":" + clockNow.min.format("%02d");
+        dc.drawText(centerX + 62, 15, Graphics.FONT_XTINY, currentTimeText,Graphics.TEXT_JUSTIFY_RIGHT);
+
+        var minute = getPlayedMinute();
+
+        dc.drawText(centerX, 91, Graphics.FONT_MEDIUM,minute.format("%02d") + "'",Graphics.TEXT_JUSTIFY_CENTER);
+        dc.drawText(centerX, 205, Graphics.FONT_XTINY,"S " + matchSteps.format("%d") + "  D " + getDistanceKm().format("%.2f") + " km", Graphics.TEXT_JUSTIFY_CENTER);
+
+        if (twoMinuteWarningShown && remainingSeconds > 0) {
+            dc.fillRectangle(centerX - 72, 112, 144, 28);
+            dc.setColor(Graphics.COLOR_BLACK, Graphics.COLOR_TRANSPARENT);
+            //dc.setColor(Graphics.COLOR_BLACK, Graphics.COLOR_WHITE);
+            dc.drawText(centerX, 115, Graphics.FONT_SMALL,"2 Minuten Rest", Graphics.TEXT_JUSTIFY_CENTER);
+            dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_BLACK);
+        }
+
+        var status = "PAUSE";
+
+        if (finished) {
+            status = "ENDE";
+        } else if (running) {
+            status = "RUN";
+        }
+
+        dc.drawText(centerX, 148, Graphics.FONT_SMALL,
+            status, Graphics.TEXT_JUSTIFY_CENTER);
+
+        if (running) {
+            dc.drawText(centerX, 176, Graphics.FONT_XTINY, secondHalf ? "2. HALBZEIT" : "1. HALBZEIT", Graphics.TEXT_JUSTIFY_CENTER);
+        } else {
+            dc.drawText(centerX, 176, Graphics.FONT_XTINY,"SPIEL BEREIT",Graphics.TEXT_JUSTIFY_CENTER);
+        }
+
+    }
+
+    function drawEventPage(dc as Graphics.Dc, centerX as Lang.Number) as Void {
+        dc.drawText(centerX, 8, Graphics.FONT_SMALL,"REFWATCH V30", Graphics.TEXT_JUSTIFY_CENTER);
+        dc.drawText(centerX, 31, Graphics.FONT_MEDIUM,"EREIGNISSE", Graphics.TEXT_JUSTIFY_CENTER);
+        dc.drawText(centerX, 61, Graphics.FONT_XTINY,"SPIELBEGINN", Graphics.TEXT_JUSTIFY_CENTER);
+        dc.drawText(centerX, 75, Graphics.FONT_SMALL,startHour.format("%02d") + ":" + startMinute.format("%02d"), Graphics.TEXT_JUSTIFY_CENTER);
+        dc.drawText(centerX, 100, Graphics.FONT_XTINY,"SPIELENDE", Graphics.TEXT_JUSTIFY_CENTER);
+        dc.drawText(centerX, 114, Graphics.FONT_SMALL,endHour.format("%02d") + ":" + endMinute.format("%02d"), Graphics.TEXT_JUSTIFY_CENTER);
+
+        var roundedFirst = (firstHalfStoppageSeconds + 59) / 60;
+        var roundedSecond = (secondHalfStoppageSeconds + 59) / 60;
+
+        dc.drawText(centerX, 142, Graphics.FONT_XTINY,"NACHSPIELZEIT 1. HZ", Graphics.TEXT_JUSTIFY_CENTER);
+        dc.setColor(Graphics.COLOR_YELLOW, Graphics.COLOR_BLACK);
+        dc.drawText(centerX, 157, Graphics.FONT_SMALL,roundedFirst.format("+%d MIN"), Graphics.TEXT_JUSTIFY_CENTER);
+        dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_BLACK);
+        dc.drawText(centerX, 184, Graphics.FONT_XTINY, "NACHSPIELZEIT 2. HZ", Graphics.TEXT_JUSTIFY_CENTER);
+        dc.setColor(Graphics.COLOR_YELLOW, Graphics.COLOR_BLACK);
+        dc.drawText(centerX, 199, Graphics.FONT_SMALL, roundedSecond.format("+%d MIN"), Graphics.TEXT_JUSTIFY_CENTER);
+        dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_BLACK);
+        dc.drawText(centerX, 224, Graphics.FONT_XTINY,"TIP = ZURÜCK ZUR AUSWAHL", Graphics.TEXT_JUSTIFY_CENTER);
+    }
+
+    function drawOption(dc as Graphics.Dc, centerX as Lang.Number,
+                        y as Lang.Number, text as Lang.String,
+                        active as Lang.Boolean) as Void {
+        if (active) {
+            dc.fillRectangle(centerX - 50, y - 3, 100, 15);
+            dc.setColor(Graphics.COLOR_BLACK, Graphics.COLOR_WHITE);
+            dc.drawText(centerX, y, Graphics.FONT_SMALL, text, Graphics.TEXT_JUSTIFY_CENTER);
+            dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_BLACK);
+        } else {
+            dc.drawText(centerX, y, Graphics.FONT_SMALL, text, Graphics.TEXT_JUSTIFY_CENTER);
+        }
+    }
+}
+
+class RefWatchDelegate extends WatchUi.BehaviorDelegate {
+
+    var view as RefWatchView;
+
+    function initialize(refView as RefWatchView) {
+        BehaviorDelegate.initialize();
+        view = refView;
+    }
+
+    function onTap(clickEvent as WatchUi.ClickEvent) as Lang.Boolean {
+        var coordinates = clickEvent.getCoordinates();
+        var y = coordinates[1];
+
+        if (!view.selectionDone) {
+            if (y >= 53 && y < 81) {
+                view.choose(90);
+            } else if (y >= 81 && y < 109) {
+                view.choose(80);
+            } else if (y >= 109 && y < 137) {
+                view.choose(70);
+            } else if (y >= 137 && y < 165) {
+                view.choose(60);
+            } else if (y >= 184 && y < 226) {
+                view.confirmSelection();
+            }
+        } else {
+            if (view.eventPageShown) {
+                view.backToSelection();
+            } else {
+                view.handleGameTap();
+            }
+        }
+
+        return true;
+    }
+
+    function onSwipe(swipeEvent as WatchUi.SwipeEvent) as Lang.Boolean {
+        if (!view.selectionDone) {
+            var direction = swipeEvent.getDirection();
+
+            if (direction == WatchUi.SWIPE_UP) {
+                view.nextSelection();
+            } else if (direction == WatchUi.SWIPE_DOWN) {
+                view.previousSelection();
+            }
+
+            return true;
+        }
+
+        return false;
+    }
+
+    function onBack() as Lang.Boolean {
+        // Spielzeitauswahl ist im Spielmodus nicht mehr erreichbar.
+        return false;
+    }
+}
 
