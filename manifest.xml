@@ -1,0 +1,13 @@
+<?xml version="1.0"?>
+<iq:manifest version="3" xmlns:iq="http://www.garmin.com/xml/connectiq">
+  <iq:application entry="RefWatchTestApp"
+      id="7B6A9F2E-4D1C-4A2E-9D71-5C3B2E8F1047"
+      minSdkVersion="3.1.0"
+      name="@Strings.AppName"
+      launcherIcon="@Drawables.LauncherIcon"
+      type="watch-app">
+    <iq:products><iq:product id="vivoactive3"/></iq:products>
+    <iq:permissions/>
+    <iq:languages><iq:language>deu</iq:language></iq:languages>
+  </iq:application>
+</iq:manifest>
